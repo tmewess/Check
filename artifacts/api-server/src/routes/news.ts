@@ -3,6 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import { db, newsTable } from "@workspace/db";
 import { getBot } from "../bot/index";
 import { logger } from "../lib/logger";
+import { requireAdminToken } from "../middleware/auth";
 
 const router = Router();
 
