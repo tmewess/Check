@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { db, adminsTable } from "@workspace/db";
+import { verifyPassword } from "./admins";
 
 const router = Router();
 
@@ -43,10 +44,7 @@ function validateTelegramWebAppData(initData: string, botToken: string): Record<
   }
 }
 
-// NEVER hardcode credentials — use env vars
-// Set ADMIN_USERNAME and ADMIN_PASSWORD in your environment variables
-const HARDCODED_ADMIN_USER = process.env["ADMIN_USERNAME"] ?? null;
-const HARDCODED_ADMIN_PASS = process.env["ADMIN_PASSWORD"] ?? null;
+// Credentials are read per-request from env vars (see /auth/login handler)
 
 router.post("/auth/login", async (req, res): Promise<void> => {
   const { username, password } = req.body as { username?: string; password?: string };
@@ -56,38 +54,37 @@ router.post("/auth/login", async (req, res): Promise<void> => {
     return;
   }
 
-  // Check env-based admin credentials (timing-safe to prevent brute force)
-  if (HARDCODED_ADMIN_USER && HARDCODED_ADMIN_PASS &&
-      username === HARDCODED_ADMIN_USER) {
-    try {
-      const passMatch = crypto.timingSafeEqual(
-        Buffer.from(password.padEnd(HARDCODED_ADMIN_PASS.length).slice(0, HARDCODED_ADMIN_PASS.length)),
-        Buffer.from(HARDCODED_ADMIN_PASS)
-      ) && password === HARDCODED_ADMIN_PASS;
-      if (passMatch) {
-        const token = jwt.sign({ username: HARDCODED_ADMIN_USER, role: "admin" }, getSecret(), { expiresIn: "30d" });
-        res.json({ token, username: HARDCODED_ADMIN_USER });
-        return;
-      }
-    } catch {}
+  // Read env vars per request (not at module load)
+  const adminUser = process.env["ADMIN_USERNAME"] ?? null;
+  const adminPass = process.env["ADMIN_PASSWORD"] ?? null;
+
+  // Check env-based admin credentials
+  if (adminUser && adminPass && username === adminUser && password === adminPass) {
+    const token = jwt.sign({ username: adminUser, role: "admin" }, getSecret(), { expiresIn: "30d" });
+    res.json({ token, username: adminUser });
+    return;
   }
 
-  // Check DB admins with loginUsername/loginPassword
+  // Check DB admins with hashed passwords
   try {
     const rows = await db.select().from(adminsTable);
-    const match = rows.find(
-      (a) => a.loginUsername && a.loginPassword &&
-             a.loginUsername === username &&
-             crypto.timingSafeEqual(
-               Buffer.from(a.loginPassword),
-               Buffer.from(password.padEnd(a.loginPassword.length).slice(0, a.loginPassword.length))
-             )
-    );
-    if (match && match.loginPassword === password) {
-      const displayName = match.username ?? match.loginUsername ?? "admin";
-      const token = jwt.sign({ username: displayName, role: "admin", telegramId: match.telegramUserId }, getSecret(), { expiresIn: "30d" });
-      res.json({ token, username: displayName });
-      return;
+    for (const a of rows) {
+      if (!a.loginUsername || !a.loginPassword) continue;
+      if (a.loginUsername !== username) continue;
+      // Support both old plaintext and new hashed passwords
+      const isHashed = a.loginPassword.includes(":");
+      const passMatch = isHashed
+        ? await verifyPassword(password, a.loginPassword)
+        : crypto.timingSafeEqual(
+            Buffer.from(a.loginPassword.padEnd(password.length)),
+            Buffer.from(password.padEnd(a.loginPassword.length))
+          ) && a.loginPassword === password;
+      if (passMatch) {
+        const displayName = a.username ?? a.loginUsername ?? "admin";
+        const token = jwt.sign({ username: displayName, role: "admin", telegramId: a.telegramUserId }, getSecret(), { expiresIn: "30d" });
+        res.json({ token, username: displayName });
+        return;
+      }
     }
   } catch {}
 
