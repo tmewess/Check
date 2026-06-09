@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { db, adminsTable } from "@workspace/db";
 import { verifyPassword } from "./admins";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -57,6 +58,8 @@ router.post("/auth/login", async (req, res): Promise<void> => {
   // Read env vars per request (not at module load)
   const adminUser = process.env["ADMIN_USERNAME"] ?? null;
   const adminPass = process.env["ADMIN_PASSWORD"] ?? null;
+
+  logger.info({ adminUser, hasAdminPass: !!adminPass, username }, "Login attempt");
 
   // Check env-based admin credentials
   if (adminUser && adminPass && username === adminUser && password === adminPass) {
